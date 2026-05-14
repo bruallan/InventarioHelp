@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useRef } from 'react';
 import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
+import stringSimilarity from 'string-similarity';
 import { GoogleGenAI } from '@google/genai';
 import { UploadCloud, FileType, CheckCircle2, AlertCircle, Loader2, Download, Image as ImageIcon, Terminal, ListChecks, FileSpreadsheet, ChevronRight, Save } from 'lucide-react';
 import { cn } from './lib/utils';
@@ -33,6 +34,7 @@ export default function App() {
   const productFileInputRef = useRef<HTMLInputElement>(null);
   
   const [activeTab, setActiveTab] = useState<'main' | 'review'>('main');
+  const [reviewViewMode, setReviewViewMode] = useState<'review' | 'table'>('review');
   const [reviewData, setReviewData] = useState<any[]>([]);
   const [currentReviewIndex, setCurrentReviewIndex] = useState(0);
   const [selectedProductReview, setSelectedProductReview] = useState('');
@@ -325,23 +327,89 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
       try {
         const data = await file.arrayBuffer();
         const workbook = XLSX.read(data);
+        // Considerando que a aba seja a primeira
         const worksheet = workbook.Sheets[workbook.SheetNames[0]];
         const json = XLSX.utils.sheet_to_json<any>(worksheet);
         
-        const dataWithReviewFlag = json.map((row, idx) => ({
-          ...row,
-          _originalIndex: idx,
-          needsReview: typeof row.Produto === 'string' && row.Produto.trim().startsWith('*')
-        }));
+        const normalizeForMatch = (str: string) => String(str).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+
+        const dataWithReviewFlag = json.map((row, idx) => {
+          const rawProdStr = String(row.Produto || '');
+          let prodStr = rawProdStr.replace(/^\*/, '').trim();
+          let finalProd = rawProdStr;
+          let needsReview = true;
+          
+          if (prodStr !== '-' && prodStr !== '') {
+             if (productDatabase.includes(prodStr)) {
+                finalProd = prodStr;
+                needsReview = false;
+             } else if (productDatabase.length > 0) {
+                const normProdStr = normalizeForMatch(prodStr);
+                const exactMatch = productDatabase.find(p => normalizeForMatch(p) === normProdStr);
+                if (exactMatch) {
+                   finalProd = exactMatch;
+                   needsReview = false;
+                } else {
+                   // Fallback to fuzzy text matching using string-similarity
+                   const matchResult = stringSimilarity.findBestMatch(String(prodStr).toLowerCase().trim(), productDatabase.map(p => String(p).toLowerCase().trim()));
+                   if (matchResult && matchResult.bestMatch && matchResult.bestMatch.rating > 0.6) {
+                      finalProd = productDatabase[matchResult.bestMatchIndex];
+                      needsReview = false;
+                   } else {
+                      needsReview = true;
+                   }
+                }
+             } else {
+               needsReview = rawProdStr.includes('*');
+             }
+          } else {
+            needsReview = false;
+          }
+          
+          return {
+            ...row,
+            _originalIndex: idx,
+            Produto: finalProd,
+            needsReview
+          };
+        });
         
         setReviewData(dataWithReviewFlag);
         const firstIndex = dataWithReviewFlag.findIndex(r => r.needsReview);
         setCurrentReviewIndex(firstIndex >= 0 ? firstIndex : 0);
         setSelectedProductReview('');
+        setReviewViewMode(firstIndex >= 0 ? 'review' : 'table');
       } catch (err) {
         console.error("Erro ao ler excel de revisão:", err);
         alert("Erro ao ler o arquivo Excel de revisão.");
       }
+    }
+  };
+
+  const handleKeepReview = () => {
+    setReviewData(prev => {
+       const newData = [...prev];
+       newData[currentReviewIndex] = {
+          ...newData[currentReviewIndex],
+          needsReview: false
+       };
+       return newData;
+    });
+    
+    // Avançar apenas para o próximo que precisa de revisão
+    const nextIdx = reviewData.findIndex((r, i) => i > currentReviewIndex && r.needsReview);
+    if (nextIdx !== -1) {
+       setCurrentReviewIndex(nextIdx);
+       setSelectedProductReview('');
+    } else {
+       const firstRemaining = reviewData.findIndex((r, i) => i !== currentReviewIndex && r.needsReview);
+       if (firstRemaining !== -1) {
+          setCurrentReviewIndex(firstRemaining);
+          setSelectedProductReview('');
+       } else {
+          // Nenhum restante
+          setSelectedProductReview('');
+       }
     }
   };
 
@@ -357,7 +425,7 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
        return newData;
     });
     
-    // Avançar
+    // Avançar apenas para o próximo que precisa de revisão
     const nextIdx = reviewData.findIndex((r, i) => i > currentReviewIndex && r.needsReview);
     if (nextIdx !== -1) {
        setCurrentReviewIndex(nextIdx);
@@ -367,6 +435,9 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
        if (firstRemaining !== -1) {
           setCurrentReviewIndex(firstRemaining);
           setSelectedProductReview('');
+       } else {
+          // Nenhum restante
+          setSelectedProductReview('');
        }
     }
   };
@@ -375,8 +446,8 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
     const dataToExport = reviewData.map(({ _originalIndex, needsReview, ...rest }) => rest);
     const worksheet = XLSX.utils.json_to_sheet(dataToExport);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Inventario_Revisado");
-    XLSX.writeFile(workbook, "inventario_revisado.xlsx");
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Inventario");
+    XLSX.writeFile(workbook, "inventario_estruturado.xlsx");
   };
 
   const exportExcel = () => {
@@ -489,6 +560,22 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
                   "Executar Script"
                 )}
               </button>
+            </div>
+          )}
+          {activeTab === 'review' && reviewData.length > 0 && (
+            <div className="flex bg-slate-100 p-1 rounded-lg">
+                <button 
+                  onClick={() => setReviewViewMode('review')} 
+                  className={cn("px-4 py-1.5 text-xs font-bold rounded-md transition-colors", reviewViewMode === 'review' ? "bg-white shadow-sm text-indigo-600" : "text-slate-500 hover:text-slate-700")}
+                >
+                  Modo Revisão
+                </button>
+                <button 
+                  onClick={() => setReviewViewMode('table')} 
+                  className={cn("px-4 py-1.5 text-xs font-bold rounded-md transition-colors", reviewViewMode === 'table' ? "bg-white shadow-sm text-indigo-600" : "text-slate-500 hover:text-slate-700")}
+                >
+                  Visualizar Planilha
+                </button>
             </div>
           )}
         </header>
@@ -688,7 +775,7 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
                     <input type="file" accept=".xlsx,.xls,.csv" className="hidden" ref={reviewFileInputRef} onChange={handleReviewFileSelect} />
                   </div>
                 </div>
-              ) : (
+              ) : reviewViewMode === 'review' ? (
                 <div className="max-w-4xl mx-auto w-full grid grid-cols-1 md:grid-cols-2 gap-8 h-full pb-8">
                   <div className="flex flex-col h-full bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                     <div className="p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
@@ -733,44 +820,55 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
                         </div>
                       </div>
 
-                      {reviewData.filter(r => r.needsReview).length > 0 ? (
-                        <div className="space-y-4">
-                          <label className="block text-sm font-semibold text-slate-700">Selecione o produto correto:</label>
-                          <select 
-                            className="w-full p-3 border border-slate-300 rounded-lg bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-                            value={selectedProductReview}
-                            onChange={(e) => setSelectedProductReview(e.target.value)}
-                          >
-                            <option value="">Selecione um produto da base...</option>
-                            {productDatabase.length > 0 ? (
-                              productDatabase.map((prod, idx) => (
-                                <option key={idx} value={prod}>{prod}</option>
-                              ))
-                            ) : (
-                              <option disabled>Nenhuma base carregada. Volte à aba principal para importar.</option>
-                            )}
-                          </select>
-                          <button
-                            onClick={handleConfirmReview}
-                            disabled={!selectedProductReview}
-                            className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
-                          >
-                            <CheckCircle2 className="w-5 h-5" /> Confirmar Produto
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="flex flex-col items-center justify-center bg-emerald-50 rounded-xl border border-emerald-100 text-emerald-800 text-center p-6 mt-4">
-                          <CheckCircle2 className="w-12 h-12 mb-3 text-emerald-500" />
-                          <h3 className="text-lg font-bold">Revisão Concluída!</h3>
-                          <p className="text-sm opacity-80 mb-4">Todos os itens com asterisco foram revisados.</p>
-                          <button
-                            onClick={exportReviewExcel}
-                            className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium shadow-sm transition-colors flex items-center gap-2"
-                          >
-                            <Download className="w-4 h-4" /> Exportar Planilha Final
-                          </button>
-                        </div>
-                      )}
+                      <div className="space-y-4">
+                        {reviewData.filter(r => r.needsReview).length > 0 ? (
+                          <>
+                            <label className="block text-sm font-semibold text-slate-700">Busque e selecione o produto correto da base:</label>
+                            <input 
+                              list="product-options"
+                              className="w-full p-3 border border-slate-300 rounded-lg bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                              value={selectedProductReview}
+                              onChange={(e) => setSelectedProductReview(e.target.value)}
+                              placeholder="Digite para buscar..."
+                              autoComplete="off"
+                            />
+                            <datalist id="product-options">
+                              {productDatabase.length > 0 && productDatabase.map((prod, idx) => (
+                                <option key={idx} value={prod} />
+                              ))}
+                            </datalist>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={handleKeepReview}
+                                className="w-1/3 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg transition-colors flex items-center justify-center gap-2 text-sm"
+                              >
+                                Manter Origem
+                              </button>
+                              <button
+                                onClick={handleConfirmReview}
+                                disabled={!selectedProductReview || (!productDatabase.includes(selectedProductReview) && selectedProductReview !== reviewData[currentReviewIndex]?.Produto)}
+                                className="w-2/3 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white font-semibold rounded-lg transition-colors flex items-center justify-center gap-2 text-sm"
+                              >
+                                <CheckCircle2 className="w-5 h-5" /> Confirmar Produto
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="flex flex-col items-center justify-center py-6 text-center">
+                            <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mb-4">
+                              <CheckCircle2 className="w-8 h-8 text-emerald-600" />
+                            </div>
+                            <h3 className="text-xl font-bold text-slate-800 mb-2">Todos os itens revisados!</h3>
+                            <p className="text-sm text-slate-500 mb-6">Você não tem mais itens pendentes na planilha.</p>
+                            <button
+                                onClick={() => setReviewViewMode('table')}
+                                className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm"
+                              >
+                                Ir para Tabela Final
+                              </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
                     
                     <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex items-center justify-between">
@@ -794,6 +892,54 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
                          </button>
                       </div>
                     </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-col h-full bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                  <div className="p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+                    <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                      {reviewData.filter(r => r.needsReview).length === 0 ? (
+                        <><CheckCircle2 className="w-5 h-5 text-emerald-500" /> Revisão Concluída - Dados Prontos para Exportação</>
+                      ) : (
+                        <><ListChecks className="w-5 h-5 text-indigo-500" /> Visualização da Planilha Completa ({reviewData.filter(r => r.needsReview).length} pendentes)</>
+                      )}
+                    </h3>
+                    <div className="flex items-center gap-2">
+                       {reviewData.filter(r => r.needsReview).length > 0 && (
+                         <button
+                           onClick={() => setReviewViewMode('review')}
+                           className="px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded font-medium shadow-sm transition-colors flex items-center gap-2 text-xs"
+                         >
+                           Continuar Revisão
+                         </button>
+                       )}
+                       <button
+                         onClick={exportReviewExcel}
+                         className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-medium shadow-sm transition-colors flex items-center gap-2 text-xs"
+                       >
+                         <Download className="w-4 h-4" /> Exportar Planilha Final
+                       </button>
+                    </div>
+                  </div>
+                  <div className="flex-1 overflow-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead className="sticky top-0 bg-slate-50 shadow-[0_1px_0_0_#f1f5f9] z-10">
+                        <tr>
+                          {Object.keys(reviewData[0]).filter(k => k !== '_originalIndex' && k !== 'needsReview').map(k => (
+                            <th key={k} className="p-3 font-bold text-slate-500 uppercase whitespace-nowrap bg-slate-50">{k}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="text-slate-700">
+                        {reviewData.map((row, idx) => (
+                          <tr key={idx} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                            {Object.keys(row).filter(k => k !== '_originalIndex' && k !== 'needsReview').map(k => (
+                              <td key={k} className="p-3 whitespace-nowrap">{row[k]}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               )}
