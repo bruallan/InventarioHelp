@@ -442,8 +442,52 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
     }
   };
 
+  const updateReviewItem = (index: number, field: string, value: any) => {
+    setReviewData(prev => {
+      const newData = [...prev];
+      newData[index] = { ...newData[index], [field]: value };
+      return newData;
+    });
+  };
+
   const exportReviewExcel = () => {
-    const dataToExport = reviewData.map(({ _originalIndex, needsReview, ...rest }) => rest);
+    const rawDataToExport = reviewData.map(({ _originalIndex, needsReview, ...rest }) => rest);
+    
+    // Group by 'Produto' and sum 'Quantidade'
+    const groupedData = new Map();
+    rawDataToExport.forEach(item => {
+      const product = item['Produto'];
+      const key = product && product !== '-' ? product : Math.random().toString(); // Don't group if '-' or empty
+
+      if (groupedData.has(key)) {
+        const existing = groupedData.get(key);
+        
+        let qty1 = 0;
+        if (typeof existing['Quantidade'] === 'number') qty1 = existing['Quantidade'];
+        else if (typeof existing['Quantidade'] === 'string') {
+          const parsed = parseFloat(existing['Quantidade'].replace(',', '.'));
+          if (!isNaN(parsed)) qty1 = parsed;
+        }
+
+        let qty2 = 0;
+        if (typeof item['Quantidade'] === 'number') qty2 = item['Quantidade'];
+        else if (typeof item['Quantidade'] === 'string') {
+          const parsed = parseFloat(item['Quantidade'].replace(',', '.'));
+          if (!isNaN(parsed)) qty2 = parsed;
+        }
+
+        existing['Quantidade'] = qty1 + qty2;
+        // Optionally combine photos
+        if (existing['Foto'] && item['Foto'] && !String(existing['Foto']).includes(item['Foto'])) {
+           existing['Foto'] = existing['Foto'] + ', ' + item['Foto'];
+        }
+      } else {
+        groupedData.set(key, { ...item });
+      }
+    });
+
+    const dataToExport = Array.from(groupedData.values());
+
     const worksheet = XLSX.utils.json_to_sheet(dataToExport);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Inventario");
@@ -821,6 +865,11 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
                       </div>
 
                       <div className="space-y-4">
+                        <datalist id="product-options">
+                          {productDatabase.length > 0 && productDatabase.map((prod, idx) => (
+                            <option key={idx} value={prod} />
+                          ))}
+                        </datalist>
                         {reviewData.filter(r => r.needsReview).length > 0 ? (
                           <>
                             <label className="block text-sm font-semibold text-slate-700">Busque e selecione o produto correto da base:</label>
@@ -832,11 +881,6 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
                               placeholder="Digite para buscar..."
                               autoComplete="off"
                             />
-                            <datalist id="product-options">
-                              {productDatabase.length > 0 && productDatabase.map((prod, idx) => (
-                                <option key={idx} value={prod} />
-                              ))}
-                            </datalist>
                             <div className="flex gap-2">
                               <button
                                 onClick={handleKeepReview}
@@ -925,6 +969,7 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
                     <table className="w-full text-left text-xs border-collapse">
                       <thead className="sticky top-0 bg-slate-50 shadow-[0_1px_0_0_#f1f5f9] z-10">
                         <tr>
+                          <th className="p-3 font-bold text-slate-500 uppercase whitespace-nowrap bg-slate-50">Miniatura</th>
                           {Object.keys(reviewData[0]).filter(k => k !== '_originalIndex' && k !== 'needsReview').map(k => (
                             <th key={k} className="p-3 font-bold text-slate-500 uppercase whitespace-nowrap bg-slate-50">{k}</th>
                           ))}
@@ -933,8 +978,45 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
                       <tbody className="text-slate-700">
                         {reviewData.map((row, idx) => (
                           <tr key={idx} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                            <td className="p-3 whitespace-nowrap">
+                              {row.Foto && items.find(i => i.filename === row.Foto)?.base64Data ? (
+                                <img
+                                  src={`data:${items.find(i => i.filename === row.Foto)?.mimeType};base64,${items.find(i => i.filename === row.Foto)?.base64Data}`}
+                                  className="w-12 h-12 object-cover rounded border border-slate-200"
+                                  alt="Miniatura"
+                                />
+                              ) : (
+                                <div className="w-12 h-12 bg-slate-100 flex items-center justify-center rounded border border-slate-200 text-slate-400 font-[10px]">
+                                  <ImageIcon className="w-4 h-4" />
+                                </div>
+                              )}
+                            </td>
                             {Object.keys(row).filter(k => k !== '_originalIndex' && k !== 'needsReview').map(k => (
-                              <td key={k} className="p-3 whitespace-nowrap">{row[k]}</td>
+                              <td key={k} className="p-3 whitespace-nowrap">
+                                {k === 'Produto' ? (
+                                  <select
+                                    className="w-full min-w-[200px] p-2 border border-slate-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 text-xs"
+                                    value={row[k] || ''}
+                                    onChange={(e) => updateReviewItem(idx, k, e.target.value)}
+                                  >
+                                    {!productDatabase.includes(row[k]) && (
+                                      <option value={row[k]}>{row[k]}</option>
+                                    )}
+                                    {productDatabase.map((prod, pIdx) => (
+                                      <option key={pIdx} value={prod}>{prod}</option>
+                                    ))}
+                                  </select>
+                                ) : k === 'Quantidade' ? (
+                                  <input
+                                    type="text"
+                                    className="w-20 p-2 border border-slate-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 text-xs"
+                                    value={row[k] || ''}
+                                    onChange={(e) => updateReviewItem(idx, k, e.target.value)}
+                                  />
+                                ) : (
+                                  row[k]
+                                )}
+                              </td>
                             ))}
                           </tr>
                         ))}
