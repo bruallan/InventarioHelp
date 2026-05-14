@@ -45,9 +45,6 @@ export default function App() {
     }]);
   };
   
-  React.useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs]);
 
   const processZip = async (file: File) => {
     try {
