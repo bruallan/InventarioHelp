@@ -2,7 +2,7 @@ import React, { useState, useCallback, useRef } from 'react';
 import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
 import { GoogleGenAI } from '@google/genai';
-import { UploadCloud, FileType, CheckCircle2, AlertCircle, Loader2, Download, Image as ImageIcon, Terminal } from 'lucide-react';
+import { UploadCloud, FileType, CheckCircle2, AlertCircle, Loader2, Download, Image as ImageIcon, Terminal, ListChecks, FileSpreadsheet, ChevronRight, Save } from 'lucide-react';
 import { cn } from './lib/utils';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "dummy" });
@@ -32,6 +32,12 @@ export default function App() {
   const [productDatabase, setProductDatabase] = useState<string[]>([]);
   const productFileInputRef = useRef<HTMLInputElement>(null);
   
+  const [activeTab, setActiveTab] = useState<'main' | 'review'>('main');
+  const [reviewData, setReviewData] = useState<any[]>([]);
+  const [currentReviewIndex, setCurrentReviewIndex] = useState(0);
+  const [selectedProductReview, setSelectedProductReview] = useState('');
+  const reviewFileInputRef = useRef<HTMLInputElement>(null);
+
   const [logs, setLogs] = useState<{id: string, time: Date, message: string, details?: string, type: string}[]>([]);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -313,6 +319,66 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
     addLog(`=== Processamento finalizado ===`, 'info');
   };
 
+  const handleReviewFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const file = e.target.files[0];
+      try {
+        const data = await file.arrayBuffer();
+        const workbook = XLSX.read(data);
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        const json = XLSX.utils.sheet_to_json<any>(worksheet);
+        
+        const dataWithReviewFlag = json.map((row, idx) => ({
+          ...row,
+          _originalIndex: idx,
+          needsReview: typeof row.Produto === 'string' && row.Produto.trim().startsWith('*')
+        }));
+        
+        setReviewData(dataWithReviewFlag);
+        const firstIndex = dataWithReviewFlag.findIndex(r => r.needsReview);
+        setCurrentReviewIndex(firstIndex >= 0 ? firstIndex : 0);
+        setSelectedProductReview('');
+      } catch (err) {
+        console.error("Erro ao ler excel de revisão:", err);
+        alert("Erro ao ler o arquivo Excel de revisão.");
+      }
+    }
+  };
+
+  const handleConfirmReview = () => {
+    if (!selectedProductReview) return;
+    setReviewData(prev => {
+       const newData = [...prev];
+       newData[currentReviewIndex] = {
+          ...newData[currentReviewIndex],
+          Produto: selectedProductReview,
+          needsReview: false
+       };
+       return newData;
+    });
+    
+    // Avançar
+    const nextIdx = reviewData.findIndex((r, i) => i > currentReviewIndex && r.needsReview);
+    if (nextIdx !== -1) {
+       setCurrentReviewIndex(nextIdx);
+       setSelectedProductReview('');
+    } else {
+       const firstRemaining = reviewData.findIndex((r, i) => i !== currentReviewIndex && r.needsReview);
+       if (firstRemaining !== -1) {
+          setCurrentReviewIndex(firstRemaining);
+          setSelectedProductReview('');
+       }
+    }
+  };
+
+  const exportReviewExcel = () => {
+    const dataToExport = reviewData.map(({ _originalIndex, needsReview, ...rest }) => rest);
+    const worksheet = XLSX.utils.json_to_sheet(dataToExport);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Inventario_Revisado");
+    XLSX.writeFile(workbook, "inventario_revisado.xlsx");
+  };
+
   const exportExcel = () => {
     const data = items.filter(i => i.status === 'completed' || i.status === 'error').map(item => ({
       Foto: item.filename,
@@ -343,18 +409,20 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
         
         <nav className="flex-1 py-4">
           <div className="px-6 py-2 text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-2">Modules</div>
-          <a href="#" className="flex items-center gap-3 px-6 py-3 bg-slate-800 text-white">
-            <FileType className="w-4 h-4 text-emerald-400" />
-            <span className="text-sm">Ingestão & Parsing</span>
-          </a>
-          <a href="#" className="flex items-center gap-3 px-6 py-3 hover:bg-slate-800 transition-colors">
-            <ImageIcon className="w-4 h-4" />
-            <span className="text-sm">Processamento Vision</span>
-          </a>
-          <a href="#" className="flex items-center gap-3 px-6 py-3 hover:bg-slate-800 transition-colors">
-            <Download className="w-4 h-4" />
-            <span className="text-sm">Consolidação Pandas</span>
-          </a>
+          <button 
+            onClick={() => setActiveTab('main')} 
+            className={cn("w-full flex items-center justify-start gap-3 px-6 py-3 transition-colors", activeTab === 'main' ? "bg-slate-800 text-white" : "hover:bg-slate-800 text-slate-300")}
+          >
+            <FileType className={cn("w-4 h-4", activeTab === 'main' && "text-emerald-400")} />
+            <span className="text-sm">Script Principal</span>
+          </button>
+          <button 
+            onClick={() => setActiveTab('review')} 
+            className={cn("w-full flex items-center justify-start gap-3 px-6 py-3 transition-colors", activeTab === 'review' ? "bg-slate-800 text-white" : "hover:bg-slate-800 text-slate-300")}
+          >
+            <ListChecks className={cn("w-4 h-4", activeTab === 'review' && "text-emerald-400")} />
+            <span className="text-sm">Revisão Manual</span>
+          </button>
         </nav>
 
         <div className="p-6 mt-auto border-t border-slate-800 space-y-4">
@@ -395,64 +463,70 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
 
       <main className="flex-1 flex flex-col overflow-hidden">
         <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 flex-shrink-0">
-          <h1 className="text-lg font-semibold text-slate-800">Arquitetura do Script de Inventário</h1>
-          <div className="flex items-center gap-4">
-            {currentFile && <span className="text-xs font-mono bg-slate-100 text-slate-800 font-medium px-2 py-1 rounded">PATH: /{currentFile}</span>}
-            <button
-              onClick={processWithAI}
-              disabled={processing || items.length === 0 || items.every(i => i.status === 'completed')}
-              className={cn(
-                "text-sm font-medium px-4 py-1.5 rounded-md transition-shadow shadow-sm flex items-center gap-2",
-                processing
-                  ? "bg-indigo-100 text-indigo-400 cursor-not-allowed"
-                  : items.every(i => i.status === 'completed') && items.length > 0
-                    ? "bg-slate-100 text-slate-400 cursor-not-allowed"
-                    : "bg-indigo-600 hover:bg-indigo-700 text-white"
-              )}
-            >
-              {processing ? (
-                <><Loader2 className="w-4 h-4 animate-spin" /> Executando Script...</>
-              ) : items.every(i => i.status === 'completed') && items.length > 0 ? (
-                <><CheckCircle2 className="w-4 h-4" /> Concluído</>
-              ) : (
-                "Executar Script"
-              )}
-            </button>
-          </div>
+          <h1 className="text-lg font-semibold text-slate-800">
+            {activeTab === 'main' ? 'Arquitetura do Script de Inventário' : 'Revisão Manual de Produtos'}
+          </h1>
+          {activeTab === 'main' && (
+            <div className="flex items-center gap-4">
+              {currentFile && <span className="text-xs font-mono bg-slate-100 text-slate-800 font-medium px-2 py-1 rounded">PATH: /{currentFile}</span>}
+              <button
+                onClick={processWithAI}
+                disabled={processing || items.length === 0 || items.every(i => i.status === 'completed')}
+                className={cn(
+                  "text-sm font-medium px-4 py-1.5 rounded-md transition-shadow shadow-sm flex items-center gap-2",
+                  processing
+                    ? "bg-indigo-100 text-indigo-400 cursor-not-allowed"
+                    : items.every(i => i.status === 'completed') && items.length > 0
+                      ? "bg-slate-100 text-slate-400 cursor-not-allowed"
+                      : "bg-indigo-600 hover:bg-indigo-700 text-white"
+                )}
+              >
+                {processing ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Executando Script...</>
+                ) : items.every(i => i.status === 'completed') && items.length > 0 ? (
+                  <><CheckCircle2 className="w-4 h-4" /> Concluído</>
+                ) : (
+                  "Executar Script"
+                )}
+              </button>
+            </div>
+          )}
         </header>
 
         <div className="flex-1 overflow-y-auto p-4 md:p-8">
-          {!currentFile && items.length === 0 && (
-            <div 
-              className={cn(
-                "border-2 border-dashed rounded-xl p-12 transition-all duration-200 ease-in-out flex flex-col items-center justify-center text-center bg-white min-h-[400px]",
-                isDragging ? "bg-indigo-50 border-indigo-500 scale-[1.02]" : "border-slate-300 hover:border-slate-400"
+          {activeTab === 'main' && (
+            <>
+              {!currentFile && items.length === 0 && (
+                <div 
+                  className={cn(
+                    "border-2 border-dashed rounded-xl p-12 transition-all duration-200 ease-in-out flex flex-col items-center justify-center text-center bg-white min-h-[400px]",
+                    isDragging ? "bg-indigo-50 border-indigo-500 scale-[1.02]" : "border-slate-300 hover:border-slate-400"
+                  )}
+                  onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
+                  onDragLeave={() => setIsDragging(false)}
+                  onDrop={onDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <input 
+                    type="file" 
+                    accept=".zip" 
+                    className="hidden" 
+                    ref={fileInputRef} 
+                    onChange={handleFileSelect} 
+                  />
+                  <div className="w-16 h-16 bg-slate-100 text-slate-400 rounded-full flex items-center justify-center mb-4">
+                    <UploadCloud className="w-8 h-8" />
+                  </div>
+                  <h3 className="text-xl font-medium text-slate-700 mb-2">Importar Exportação do WhatsApp</h3>
+                  <p className="text-slate-500 max-w-md">
+                    Arraste e solte o arquivo <strong>.zip</strong> contendo o chat e as imagens, ou clique para selecionar.
+                  </p>
+                </div>
               )}
-              onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={onDrop}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <input 
-                type="file" 
-                accept=".zip" 
-                className="hidden" 
-                ref={fileInputRef} 
-                onChange={handleFileSelect} 
-              />
-              <div className="w-16 h-16 bg-slate-100 text-slate-400 rounded-full flex items-center justify-center mb-4">
-                <UploadCloud className="w-8 h-8" />
-              </div>
-              <h3 className="text-xl font-medium text-slate-700 mb-2">Importar Exportação do WhatsApp</h3>
-              <p className="text-slate-500 max-w-md">
-                Arraste e solte o arquivo <strong>.zip</strong> contendo o chat e as imagens, ou clique para selecionar.
-              </p>
-            </div>
-          )}
 
-          {items.length > 0 && (
-            <div className="grid grid-cols-12 gap-6 h-full pb-8">
-              <section className="col-span-12 xl:col-span-4 flex flex-col gap-6">
+              {items.length > 0 && (
+                <div className="grid grid-cols-12 gap-6 h-full pb-8">
+                  <section className="col-span-12 xl:col-span-4 flex flex-col gap-6">
                 <div className="bg-white rounded-xl border border-slate-200 shadow-sm flex-1 flex flex-col overflow-hidden min-h-[300px]">
                   <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
                     <h2 className="text-xs font-bold uppercase tracking-tight text-slate-500">1. Regex Ingestion ({items.length})</h2>
@@ -597,6 +671,132 @@ Não inclua crases para blocos de código nem qualquer outro texto além do JSON
                   </div>
                 </div>
               </section>
+            </div>
+          )}
+          </>
+          )}
+
+          {activeTab === 'review' && (
+            <div className="h-full flex flex-col">
+              {reviewData.length === 0 ? (
+                <div className="flex-1 flex flex-col items-center justify-center">
+                  <div className="border-2 border-dashed border-slate-300 hover:border-slate-400 rounded-xl p-12 text-center max-w-md cursor-pointer transition-colors" onClick={() => reviewFileInputRef.current?.click()}>
+                    <FileSpreadsheet className="w-12 h-12 text-slate-400 mx-auto mb-4" />
+                    <h3 className="text-xl font-medium text-slate-700 mb-2">Importar inventario_estruturado.xlsx</h3>
+                    <p className="text-sm text-slate-500 mb-6">Envie a planilha gerada na etapa anterior para revisar os itens não identificados pela base.</p>
+                    <button className="px-4 py-2 bg-slate-900 text-white rounded font-medium text-sm">Selecionar Arquivo</button>
+                    <input type="file" accept=".xlsx,.xls,.csv" className="hidden" ref={reviewFileInputRef} onChange={handleReviewFileSelect} />
+                  </div>
+                </div>
+              ) : (
+                <div className="max-w-4xl mx-auto w-full grid grid-cols-1 md:grid-cols-2 gap-8 h-full pb-8">
+                  <div className="flex flex-col h-full bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div className="p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+                      <span className="text-xs font-bold uppercase tracking-widest text-slate-500">
+                        Visualização
+                      </span>
+                      <span className="text-xs font-medium text-slate-400">
+                        {currentReviewIndex + 1} de {reviewData.length}
+                      </span>
+                    </div>
+                    <div className="flex-1 relative bg-slate-100 flex items-center justify-center p-4">
+                      {reviewData[currentReviewIndex]?.Foto && items.find(i => i.filename === reviewData[currentReviewIndex].Foto)?.base64Data ? (
+                        <img 
+                          src={`data:${items.find(i => i.filename === reviewData[currentReviewIndex].Foto)?.mimeType};base64,${items.find(i => i.filename === reviewData[currentReviewIndex].Foto)?.base64Data}`} 
+                          className="max-h-[500px] w-auto object-contain rounded"
+                          alt="Revisar Produto" 
+                        />
+                      ) : (
+                        <div className="text-slate-400 text-sm text-center">
+                          <ImageIcon className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                          <p>Imagem não encontrada no ZIP em memória.</p>
+                          <p className="text-xs mt-1">(Você precisa importar o .zip na aba Principal primeiro)</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-6">
+                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+                      <div className="mb-6">
+                        {reviewData[currentReviewIndex]?.needsReview ? (
+                          <span className="inline-block px-2 py-1 bg-amber-100 text-amber-800 text-[10px] font-bold rounded mb-3">Item não reconhecido na Base</span>
+                        ) : (
+                          <span className="inline-block px-2 py-1 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded mb-3">Item Revisado</span>
+                        )}
+                        <h2 className="text-xl font-bold text-slate-800 mb-2">
+                          {reviewData[currentReviewIndex]?.Produto || 'Desconhecido'}
+                        </h2>
+                        <div className="flex gap-4 text-sm text-slate-500 bg-slate-50 p-3 rounded border border-slate-100">
+                          <div><strong className="text-slate-700">Arquivo:</strong> {reviewData[currentReviewIndex]?.Foto}</div>
+                          <div><strong className="text-slate-700">Qtd:</strong> {reviewData[currentReviewIndex]?.Quantidade}</div>
+                        </div>
+                      </div>
+
+                      {reviewData.filter(r => r.needsReview).length > 0 ? (
+                        <div className="space-y-4">
+                          <label className="block text-sm font-semibold text-slate-700">Selecione o produto correto:</label>
+                          <select 
+                            className="w-full p-3 border border-slate-300 rounded-lg bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                            value={selectedProductReview}
+                            onChange={(e) => setSelectedProductReview(e.target.value)}
+                          >
+                            <option value="">Selecione um produto da base...</option>
+                            {productDatabase.length > 0 ? (
+                              productDatabase.map((prod, idx) => (
+                                <option key={idx} value={prod}>{prod}</option>
+                              ))
+                            ) : (
+                              <option disabled>Nenhuma base carregada. Volte à aba principal para importar.</option>
+                            )}
+                          </select>
+                          <button
+                            onClick={handleConfirmReview}
+                            disabled={!selectedProductReview}
+                            className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
+                          >
+                            <CheckCircle2 className="w-5 h-5" /> Confirmar Produto
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center justify-center bg-emerald-50 rounded-xl border border-emerald-100 text-emerald-800 text-center p-6 mt-4">
+                          <CheckCircle2 className="w-12 h-12 mb-3 text-emerald-500" />
+                          <h3 className="text-lg font-bold">Revisão Concluída!</h3>
+                          <p className="text-sm opacity-80 mb-4">Todos os itens com asterisco foram revisados.</p>
+                          <button
+                            onClick={exportReviewExcel}
+                            className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium shadow-sm transition-colors flex items-center gap-2"
+                          >
+                            <Download className="w-4 h-4" /> Exportar Planilha Final
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex items-center justify-between">
+                      <div className="text-sm text-slate-500 font-medium">
+                        Pendentes: <strong className="text-amber-600">{reviewData.filter(r => r.needsReview).length}</strong> / {reviewData.length}
+                      </div>
+                      <div className="flex gap-2">
+                         <button 
+                           onClick={() => setCurrentReviewIndex(prev => Math.max(0, prev - 1))}
+                           disabled={currentReviewIndex === 0}
+                           className="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 rounded text-slate-600 disabled:opacity-50 text-sm font-medium transition-colors"
+                         >
+                           Anterior
+                         </button>
+                         <button 
+                           onClick={() => setCurrentReviewIndex(prev => Math.min(reviewData.length - 1, prev + 1))}
+                           disabled={currentReviewIndex === reviewData.length - 1}
+                           className="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 rounded text-slate-600 disabled:opacity-50 text-sm font-medium transition-colors"
+                         >
+                           Próximo
+                         </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
