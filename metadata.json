@@ -1,0 +1,6 @@
+{
+  "name": "Inventory Extractor AI",
+  "description": "WhatsApp Inventory Extractor powered by Gemini Vision. Upload a chat export ZIP to process images and messages.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
